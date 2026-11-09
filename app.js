@@ -3,7 +3,7 @@
 const $ = id => document.getElementById(id);
 const esc = v => String(v ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function toast(message){const n=$('toast');n.textContent=message;n.classList.add('show');clearTimeout(toast.timer);toast.timer=setTimeout(()=>n.classList.remove('show'),3800)}
-function view(name){['setup','welcome','register','login','hold','dashboard'].forEach(x=>$(x).classList.toggle('hidden',x!==name))}
+function view(name){if(name!=='dashboard'&&document.body.classList.contains('mobile-nav-open'))closeMobileMenu();['setup','welcome','register','login','hold','dashboard'].forEach(x=>$(x).classList.toggle('hidden',x!==name))}
 function fail(err){
  console.error('Payravon API error', err);
  const code = String(err?.code || '').toLowerCase();
@@ -30,7 +30,7 @@ const client = configured && window.supabase ? window.supabase.createClient(conf
   auth: { persistSession: true, autoRefreshToken: true }
 }) : null;
 let current=null, activeTab='home', busy=false;
-let data={universities:[],students:[],lessons:[],attendance:[],announcements:[],warnings:[]};
+let data={universities:[],students:[],lessons:[],attendance:[],announcements:[],warnings:[],points:[]};
 function role(){return current?.role||'student'}
 function isStaff(){return role()==='admin'||role()==='super_admin'}
 function roleText(r){return ({student:'Донишҷӯ',admin:'Admin',super_admin:'Super Admin'})[r] || r}
@@ -61,9 +61,10 @@ async function loadData(){
   const jobs=[q('lessons',{order:'id'}),q('attendance',{order:'id',ascending:false}),q('announcements',{order:'id',ascending:false})];
   if(isStaff())jobs.push(q('profiles',{order:'created_at',ascending:false}));
   else jobs.push(Promise.resolve([current]));
-  const [lessons,attendance,announcements,students]=await Promise.all(jobs);
+  jobs.push(q('points_ledger',{order:'created_at',ascending:false}));
+  const [lessons,attendance,announcements,students,points]=await Promise.all(jobs);
   data.lessons=lessons;data.attendance=attendance;data.announcements=announcements;
-  data.students=students;
+  data.students=students;data.points=points;
   if(isStaff()){
     const {data:warnings,error}=await client.rpc('absence_warnings');
     if(error){
@@ -95,16 +96,17 @@ function openDashboard(){
  $('dashSubtitle').textContent=role()==='student'?'Маълумоти курс ва иштироки шумо':'Идоракунии донишҷӯён ва 30 дарс';
  $('statCount').textContent=String(data.lessons.length);renderTabs(activeTab);
 }
+function studentPoints(id){return data.points.filter(p=>p.student_id===id).reduce((sum,p)=>sum+Number(p.points||0),0)}
 function renderTabs(tab='home'){
  if(!current)return;activeTab=tab;
- const studentTabs=[['home','Асосӣ'],['lessons','Дарсҳо'],['scan','Скан кардани QR'],['attendance','Иштироки ман'],['announcements','Эълонҳо'],['account','Логин ва парол']];
- const staffTabs=[['home','Асосӣ'],['students',`Донишҷӯён${data.warnings.length?' ('+data.warnings.length+')':''}`],['lessons','30 дарс'],['qr','QR-коди дарс'],['attendance','Иштирок'],['announcements','Эълонҳо'],['reports','Ҳисобот'],['account','Логин ва парол']];
- if(role()==='super_admin')staffTabs.splice(7,0,['settings','Танзимот']);
+ const studentTabs=[['home','Асосӣ'],['my','Саҳифаи ман'],['lessons','Дарсҳо'],['scan','Скан кардани QR'],['attendance','Иштироки ман'],['announcements','Эълонҳо'],['account','Логин ва парол']];
+ const staffTabs=[['home','Асосӣ'],['students',`Донишҷӯён${data.warnings.length?' ('+data.warnings.length+')':''}`],['lessons','30 дарс'],['qr','QR-коди дарс'],['attendance','Иштирок'],['announcements','Эълонҳо'],['reports','Ҳисобот'],['points','Холҳо'],['account','Логин ва парол']];
+ if(role()==='super_admin')staffTabs.splice(staffTabs.findIndex(t=>t[0]==='account'),0,['settings','Танзимот']);
  const tabs=role()==='student'?studentTabs:staffTabs;
  if(!tabs.some(t=>t[0]===tab)){tab='home';activeTab='home'}
  $('nav').innerHTML=tabs.map(([k,n])=>`<button class="tab ${k===tab?'active':''}" data-tab="${k}">${esc(n)}</button>`).join('');
  $('nav').querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>renderTabs(b.dataset.tab)));
- const pages={home,students,lessons,qr:qrPanel,scan:scanPanel,attendance,announcements,reports,settings,account:accountSettings};
+ const pages={home,my:myPage,students,lessons,qr:qrPanel,scan:scanPanel,attendance,announcements,reports,points:pointsPage,settings,account:accountSettings};
  pages[tab]?.();
 }
 function panel(html){$('panel').innerHTML=html}
@@ -120,7 +122,7 @@ function students(){
  if(!isStaff())return;
  const pending=data.students.filter(s=>s.role==='student'&&s.status==='pending');
  const approved=data.students.filter(s=>s.role==='student'&&s.status==='approved');
- const studentRows=(list,kind)=>list.length?`<div class="table-wrap"><table><thead><tr><th>Ному насаб</th><th>Телефон</th><th>Донишгоҳ</th><th>Курс</th><th>Амалиёт</th></tr></thead><tbody>${list.map(s=>`<tr><td>${esc(s.full_name)}</td><td>${esc(s.phone)}</td><td>${esc(universityName(s.university_id))}</td><td>${esc(s.course)}</td><td>${kind==='pending'?`<button class="btn primary" data-act="approve" data-id="${esc(s.id)}">Тасдиқ</button> <button class="btn danger" data-act="reject" data-id="${esc(s.id)}">Рад</button>`:`<button class="btn danger" data-act="remove" data-id="${esc(s.id)}">Нест кардан</button>`}</td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">Маълумот нест.</div>';
+ const studentRows=(list,kind)=>list.length?`<div class="table-wrap"><table><thead><tr><th>Ному насаб</th><th>Телефон</th><th>Донишгоҳ</th><th>Курс</th><th>Хол</th><th>Амалиёт</th></tr></thead><tbody>${list.map(s=>`<tr><td>${esc(s.full_name)}</td><td>${esc(s.phone)}</td><td>${esc(universityName(s.university_id))}</td><td>${esc(s.course)}</td><td>${studentPoints(s.id)}</td><td>${kind==='pending'?`<button class="btn primary" data-act="approve" data-id="${esc(s.id)}">Тасдиқ</button> <button class="btn danger" data-act="reject" data-id="${esc(s.id)}">Рад</button>`:`<button class="btn danger" data-act="remove" data-id="${esc(s.id)}">Нест кардан</button>`}</td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">Маълумот нест.</div>';
  panel(`<div class="panel-card"><h3>Огоҳӣ: ду дарси пайдарпай ғоиб</h3>${data.warnings.length?data.warnings.map(w=>`<div class="mini-card"><b style="font-size:17px">${esc(w.full_name)}</b><p>Дарсҳои ${w.lesson_a} ва ${w.lesson_b}: иштирок сабт нашудааст.</p><button class="btn danger" data-act="exclude" data-id="${esc(w.student_id)}">Бо тасдиқ хориҷ кардан</button></div>`).join(''):'<p class="muted">Огоҳӣ нест.</p>'}</div><div class="panel-card"><div class="panel-title"><h3>Дархостҳои бақайдгирӣ</h3><span class="status">${pending.length} интизор</span></div>${studentRows(pending,'pending')}</div><div class="panel-card"><h3>Донишҷӯёни тасдиқшуда</h3>${studentRows(approved,'approved')}</div><div class="notice">«Нест кардан» ҳисоби донишҷӯро ғайрифаъол ва аз рӯйхати фаъол хориҷ мекунад. Таърихи иштирок барои ҳисобот нигоҳ дошта мешавад.</div>`);
  attachStudentButtons();
 }
@@ -179,7 +181,7 @@ function scanPanel(){
      if(scanner){await scanner.stop();scanner=null}
      const {error}=await client.rpc('mark_attendance',{p_lesson:qr.lesson,p_token:qr.token});
      if(error)throw error;
-     $('scanResult').textContent=`Иштироки шумо барои дарси ${qr.lesson} сабт шуд.`;
+     $('scanResult').textContent=`Иштироки шумо барои дарси ${qr.lesson} сабт шуд. +3 хол!`;
      await loadData();toast('Иштирок дар базаи маълумот сабт шуд.');
     }catch(e){$('scanResult').textContent=e.message||'Скан хато шуд.';fail(e)}finally{handling=false}
    },()=>{});
@@ -204,16 +206,17 @@ function getReport(){
  return data.students.filter(s=>s.role==='student'&&s.status==='approved').map(s=>{
   const eligible=completed.filter(l=>s.approved_at&&new Date(l.completed_at)>=new Date(s.approved_at));
   const attended=eligible.filter(l=>data.attendance.some(a=>a.student_id===s.id&&a.lesson_id===l.id)).length;
+  const scans=data.attendance.filter(a=>a.student_id===s.id).length;
   const absent=eligible.length-attended;
-  return {name:s.full_name,university:universityName(s.university_id),course:s.course,present:attended,absent,total:eligible.length,percent:eligible.length?(attended/eligible.length*100).toFixed(1):'—'};
+  return {name:s.full_name,university:universityName(s.university_id),course:s.course,present:scans,absent,total:eligible.length,percent:eligible.length?(attended/eligible.length*100).toFixed(1):'—',points:studentPoints(s.id)};
  });
 }
 function reports(){
  if(!isStaff())return;
  const rows=getReport();
- panel(`<div class="panel-card"><div class="panel-title"><h3>Ҳисоботи курс</h3><button class="btn primary" id="csv">Содироти CSV</button></div><p class="muted">Ғоибӣ танҳо барои дарсҳои анҷомёфтаи баъди тасдиқи донишҷӯ ҳисоб мешавад, на ҳамаи 30 дарс.</p>${rows.length?`<div class="table-wrap"><table><thead><tr><th>Донишҷӯ</th><th>Донишгоҳ</th><th>Курс</th><th>Дарсҳои ҳисобшаванда</th><th>Ҳозир</th><th>Ғоиб</th><th>Иштирок</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${esc(r.name)}</td><td>${esc(r.university)}</td><td>${esc(r.course)}</td><td>${r.total}</td><td>${r.present}</td><td>${r.absent}</td><td>${r.percent==='—'?'—':r.percent+'%'}</td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">Маълумоти кофӣ нест.</div>'}</div>`);
+ panel(`<div class="panel-card"><div class="panel-title"><h3>Ҳисоботи курс</h3><button class="btn primary" id="csv">Содироти CSV</button></div><p class="muted">Ҳозир — ҳар QR-и бомуваффақият сабтшуда (ҳатто дарси фаъол). Ғоибӣ ва фоиз танҳо аз дарсҳои анҷомёфтаи баъди тасдиқ ҳисоб мешаванд. Ҳангоми кушода будани ҳисобот, маълумот ҳар 10 сония нав мешавад.</p>${rows.length?`<div class="table-wrap"><table><thead><tr><th>Донишҷӯ</th><th>Донишгоҳ</th><th>Курс</th><th>Дарсҳои ҳисобшаванда</th><th>Ҳозир (QR)</th><th>Ғоиб</th><th>Иштирок</th><th>Хол</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${esc(r.name)}</td><td>${esc(r.university)}</td><td>${esc(r.course)}</td><td>${r.total}</td><td>${r.present}</td><td>${r.absent}</td><td>${r.percent==='—'?'—':r.percent+'%'}</td><td>${r.points}</td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">Маълумоти кофӣ нест.</div>'}</div>`);
  $('csv').onclick=()=>{
-  const cells=[['Ному насаб','Донишгоҳ','Курс','Дарсҳои ҳисобшаванда','Ҳозир','Ғоиб','Фоизи иштирок'],...rows.map(r=>[r.name,r.university,r.course,r.total,r.present,r.absent,r.percent])];
+  const cells=[['Ному насаб','Донишгоҳ','Курс','Дарсҳои ҳисобшаванда','Ҳозир','Ғоиб','Фоизи иштирок','Хол'],...rows.map(r=>[r.name,r.university,r.course,r.total,r.present,r.absent,r.percent,r.points])];
   const csv='\uFEFF'+cells.map(r=>r.map(v=>{let x=String(v??'');if(/^[=+@-]/.test(x))x="'"+x;return '"'+x.replaceAll('"','""')+'"';}).join(';')).join('\r\n');
   const link=document.createElement('a');link.href=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));link.download='hisoboti-payravon.csv';link.click();setTimeout(()=>URL.revokeObjectURL(link.href),1500);
  };
@@ -221,16 +224,42 @@ function reports(){
 function settings(){
  if(role()!=='super_admin')return;
  const possible=data.students.filter(s=>s.role==='student'&&s.status==='approved');
- panel(`<div class="panel-card"><h3>Донишгоҳҳо</h3><form id="universityForm" class="form-grid"><label>Иловаи донишгоҳ<input name="name" required maxlength="200"></label><button class="btn primary">Илова кардан</button></form><p class="muted">${data.universities.map(u=>esc(u.name)).join(' · ')}</p></div><div class="panel-card"><h3>Таъин кардани Admin</h3><p class="notice">Танҳо Super Admin метавонад аз донишҷӯи тасдиқшуда Admin созад. Аввал ҳисобро бо email сабт карда, тасдиқ кунед.</p>${possible.length?`<form id="staffForm" class="form-grid"><label>Интихоби ҳисоб<select name="user">${possible.map(u=>`<option value="${u.id}">${esc(u.full_name)} — ${esc(u.phone)}</option>`).join('')}</select></label><button class="btn danger">Admin таъин кардан</button></form>`:'<p>Ҳисоби мувофиқ нест.</p>'}</div>`);
+ const admins=data.students.filter(s=>s.role==='admin');
+ const adminRows=admins.length?`<div class="table-wrap"><table><thead><tr><th>Ному насаб</th><th>Телефон</th><th>Донишгоҳ</th><th>Амалиёт</th></tr></thead><tbody>${admins.map(a=>`<tr><td>${esc(a.full_name)}</td><td>${esc(a.phone)}</td><td>${esc(universityName(a.university_id))}</td><td><button class="btn danger" data-demote="${esc(a.id)}">Аз Admin баровардан</button></td></tr>`).join('')}</tbody></table></div>`:'<p class="muted">Ҳоло Admin нест.</p>';
+ panel(`<div class="panel-card"><h3>Донишгоҳҳо</h3><form id="universityForm" class="form-grid"><label>Иловаи донишгоҳ<input name="name" required maxlength="200"></label><button class="btn primary">Илова кардан</button></form><p class="muted">${data.universities.map(u=>esc(u.name)).join(' · ')}</p></div><div class="panel-card"><h3>Admin-ҳои фаъол (${admins.length})</h3>${adminRows}<p class="hint">Баровардан танҳо ҳуқуқи Admin-ро бекор мекунад, ҳисоб ва таърихи иштироки ӯро нест намекунад.</p></div><div class="panel-card"><h3>Таъин кардани Admin</h3>${possible.length?`<form id="staffForm" class="form-grid"><label>Интихоби ҳисоб<select name="user">${possible.map(u=>`<option value="${esc(u.id)}">${esc(u.full_name)} — ${esc(u.phone)}</option>`).join('')}</select></label><button class="btn primary">Admin таъин кардан</button></form>`:'<p>Ҳисоби мувофиқ нест.</p>'}</div>`);
  $('universityForm').onsubmit=async e=>{
   e.preventDefault();const name=String(new FormData(e.target).get('name')||'').trim();
-  try{const {error}=await client.from('universities').insert({name});if(error)throw error;await getUniversities();renderTabs('settings');toast('Донишгоҳ илова шуд.')}catch(ex){fail(ex)}
+  try{updateBusy(e.target,true);const {error}=await client.from('universities').insert({name});if(error)throw error;await getUniversities();renderTabs('settings');toast('Донишгоҳ илова шуд.')}catch(ex){fail(ex)}finally{updateBusy(e.target,false)}
  };
  if(possible.length)$('staffForm').onsubmit=async e=>{
   e.preventDefault();const user=new FormData(e.target).get('user');
   if(!confirm('Ба ин ҳисоб ҳуқуқи Admin дода шавад?'))return;
-  try{const {error}=await client.rpc('set_staff_role',{p_user:user,p_role:'admin'});if(error)throw error;await refresh('settings');toast('Ҳуқуқи Admin дода шуд.')}catch(ex){fail(ex)}
+  try{updateBusy(e.target,true);const {error}=await client.rpc('set_staff_role',{p_user:user,p_role:'admin'});if(error)throw error;await refresh('settings');toast('Ҳуқуқи Admin дода шуд.')}catch(ex){fail(ex)}finally{updateBusy(e.target,false)}
  };
+ $('panel').querySelectorAll('[data-demote]').forEach(b=>b.onclick=async()=>{
+  const person=admins.find(a=>a.id===b.dataset.demote);
+  if(!person||!confirm(`Ҳуқуқи Admin-и «${person.full_name}» бекор шавад?`))return;
+  try{b.disabled=true;const {error}=await client.rpc('set_staff_role',{p_user:person.id,p_role:'student'});if(error)throw error;await refresh('settings');toast('Ҳуқуқи Admin бекор шуд.')}catch(e){fail(e);b.disabled=false}
+ });
+}
+function pointsPage(){
+ if(!isStaff())return;
+ const students=data.students.filter(s=>s.role==='student'&&s.status==='approved');
+ panel(`<div class="panel-card"><h3>Додани хол барои чорабинӣ ё ҷамъомад</h3><p class="muted">Ҳар QR-и нав барои як дарс худкор 3 хол медиҳад. Барои кори иловагӣ метавонед хол илова кунед; сабаб ва номи диҳанда сабт мешаванд.</p>${students.length?`<form id="pointsForm" class="form-grid"><label>Донишҷӯ<select name="student" required>${students.map(s=>`<option value="${esc(s.id)}">${esc(s.full_name)}</option>`).join('')}</select></label><label>Хол (1–100)<input type="number" name="points" min="1" max="100" value="3" required></label><label class="full">Сабаби додани хол<input name="reason" minlength="5" maxlength="300" required placeholder="Масалан: иштирок дар чорабинӣ"></label><button class="btn primary full">Хол илова кардан</button></form>`:'<p>Донишҷӯи тасдиқшуда нест.</p>'}</div><div class="panel-card"><h3>Ҷамъи холҳои донишҷӯён</h3><div class="table-wrap"><table><thead><tr><th>Донишҷӯ</th><th>Хол</th></tr></thead><tbody>${students.map(s=>`<tr><td>${esc(s.full_name)}</td><td>${studentPoints(s.id)}</td></tr>`).join('')}</tbody></table></div></div><div class="panel-card"><h3>Таърихи холҳо</h3><div class="table-wrap"><table><thead><tr><th>Донишҷӯ</th><th>Хол</th><th>Сабаб</th><th>Сана</th></tr></thead><tbody>${data.points.map(p=>`<tr><td>${esc(data.students.find(s=>s.id===p.student_id)?.full_name||'—')}</td><td>+${Number(p.points)}</td><td>${esc(p.reason)}</td><td>${dateTime(p.created_at)}</td></tr>`).join('')}</tbody></table></div></div>`);
+ if(students.length)$('pointsForm').onsubmit=async e=>{
+  e.preventDefault();const f=new FormData(e.target),v=Number(f.get('points'));
+  if(!Number.isInteger(v)||v<1||v>100){toast('Хол аз 1 то 100 бошад.');return}
+  try{updateBusy(e.target,true);const {error}=await client.rpc('award_manual_points',{p_student:f.get('student'),p_points:v,p_reason:String(f.get('reason')).trim()});if(error)throw error;await refresh('points');toast('Холҳо сабт шуданд.')}catch(ex){fail(ex)}finally{updateBusy(e.target,false)}
+ };
+}
+function myPage(){
+ if(role()!=='student')return;
+ const attended=new Set(data.attendance.filter(a=>a.student_id===current.id).map(a=>a.lesson_id));
+ const eligible=data.lessons.filter(l=>l.status==='completed'&&l.completed_at&&current.approved_at&&new Date(l.completed_at)>=new Date(current.approved_at));
+ const present=eligible.filter(l=>attended.has(l.id)).length,absent=eligible.length-present;
+ const allPresent=attended.size;
+ const pct=eligible.length?Math.round(present*100/eligible.length):0;
+ panel(`<div class="grid-cards"><div class="mini-card"><small>Холҳои ман</small><b>${studentPoints(current.id)}</b></div><div class="mini-card"><small>Дарсҳои иштироккарда (QR)</small><b>${allPresent}</b></div><div class="mini-card"><small>Ғоиб (дарсҳои анҷомёфта)</small><b>${absent}</b></div></div><div class="panel-card"><h3>Маълумоти шахсии ман</h3><p><b>Ному насаб:</b> ${esc(current.full_name)}</p><p><b>Телефон:</b> ${esc(current.phone)}</p><p><b>Донишгоҳ:</b> ${esc(universityName(current.university_id))}</p><p><b>Курс:</b> ${esc(current.course)}</p><p><b>Ҳолат:</b> ${current.status==='approved'?'Тасдиқшуда':esc(current.status)}</p></div><div class="panel-card"><h3>Графики иштирок</h3><p class="muted">Фоизи иштирок дар дарсҳои анҷомёфтаи баъди тасдиқи ҳисоб: ${eligible.length?pct+'%':'Ҳоло дарси ҳисобшаванда нест'}</p><div class="bar-chart"><div class="bar-row"><span>Ҳозир (${present})</span><div class="bar-track"><div class="bar-fill present" style="width:${pct}%"></div></div></div><div class="bar-row"><span>Ғоиб (${absent})</span><div class="bar-track"><div class="bar-fill absent" style="width:${eligible.length?100-pct:0}%"></div></div></div></div><h3>Натиҷа аз рӯйи дарс</h3><div class="lesson-chart">${data.lessons.map(l=>{const eligibleLesson=eligible.some(x=>x.id===l.id);const state=attended.has(l.id)?'present':eligibleLesson?'absent':'pending';return `<div class="lesson-dot ${state}" title="${esc(l.title)}: ${state==='present'?'Иштирок':state==='absent'?'Ғоиб':'Ҳоло ҳисоб намешавад'}">${l.id}</div>`}).join('')}</div><p class="hint">Сабз — ҳозир; сурх — ғоиб; хокистарӣ — ҳоло ҳисоб намешавад.</p></div><div class="panel-card"><h3>Таърихи холҳои ман</h3>${data.points.length?`<div class="table-wrap"><table><thead><tr><th>Хол</th><th>Сабаб</th><th>Сана</th></tr></thead><tbody>${data.points.map(p=>`<tr><td>+${Number(p.points)}</td><td>${esc(p.reason)}</td><td>${dateTime(p.created_at)}</td></tr>`).join('')}</tbody></table></div>`:'<p class="muted">Ҳоло хол нест.</p>'}</div>`);
 }
 function accountSettings(){
  panel(`<div class="panel-card"><h3>Иваз кардани логин (email)</h3><p class="muted">Email-и ҳозира: <span id="currentEmail">...</span></p><form id="emailForm" class="form-grid one"><label>Email-и нав<input type="email" name="email" required></label><button class="btn primary">Иваз кардани email</button></form><p class="hint">Supabase метавонад тасдиқи почтаи кӯҳна ва навро талаб кунад.</p></div><div class="panel-card"><h3>Иваз кардани парол</h3><form id="passwordForm" class="form-grid one"><label>Пароли ҳозира<input name="current_password" type="password" autocomplete="current-password" required></label><label>Пароли нав (камаш 8 аломат)<input name="password" type="password" autocomplete="new-password" minlength="8" required></label><label>Такрори пароли нав<input name="confirm" type="password" autocomplete="new-password" minlength="8" required></label><button class="btn primary">Иваз кардани парол</button></form></div>`);
@@ -245,7 +274,10 @@ function accountSettings(){
   try{updateBusy(e.target,true);const {error}=await client.auth.updateUser({password:f.password,current_password:f.current_password});if(error)throw error;toast('Парол нав карда шуд.');e.target.reset()}catch(ex){fail(ex)}finally{updateBusy(e.target,false)}
  };
 }
-async function logout(){try{if(client)await client.auth.signOut()}catch(e){console.error(e)}current=null;$('logoutBtn').hidden=true;$('roleLabel').textContent='Кушодани система';activeTab='home';view('welcome')}
+function closeMobileMenu(){document.body.classList.remove('mobile-nav-open');$('menuToggle')?.setAttribute('aria-expanded','false')}
+$('menuToggle').onclick=()=>{const isOpen=document.body.classList.toggle('mobile-nav-open');$('menuToggle').setAttribute('aria-expanded',String(isOpen))};
+$('navBackdrop').onclick=closeMobileMenu;
+async function logout(){closeMobileMenu();try{if(client)await client.auth.signOut()}catch(e){console.error(e)}current=null;$('logoutBtn').hidden=true;$('roleLabel').textContent='Кушодани система';activeTab='home';view('welcome')}
 $('logoutBtn').onclick=logout;$('holdLogout').onclick=logout;
 document.querySelectorAll('[data-view]').forEach(b=>b.addEventListener('click',()=>view(b.dataset.view)));
 $('registerForm').onsubmit=async e=>{
@@ -274,3 +306,8 @@ async function init(){
  try{await getUniversities();await loadCurrent()}catch(e){fail(e);view('welcome')}
 }
 init();
+// Refresh visible staff reports while other students scan on different devices.
+setInterval(async()=>{
+ if(!client||!current||!isStaff()||activeTab!=='reports'||document.hidden||$('dashboard').classList.contains('hidden'))return;
+ try{await loadData();if(activeTab==='reports')reports()}catch(error){console.warn('Report refresh failed',error)}
+},10000);
